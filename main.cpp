@@ -3,24 +3,31 @@
 #include <softPwm.h>
 #include <stdio.h>
 #include <wiringPi.h>
+#include <wiringSerial.h>
 
 #define PWM_PIN 18 // 定义PWM引脚
 
-int kp, ki, kd;
-float offset, error, error_last;
+using namespace std;
+using namespace cv;
 
-cv::Scalar upper_pink = cv::Scalar(180, 50, 200);
-cv::Scalar lower_pink = cv::Scalar(180, 50, 200);
-cv::Scalar upper_black = cv::Scalar(180, 50, 200);
-cv::Scalar lower_black = cv::Scalar(180, 50, 200);
+int kp, ki, kd;
+float offset, g_error, error_last;
+Mat frame;
+
+Scalar upper_pink = Scalar(180, 50, 200);
+Scalar lower_pink = Scalar(180, 50, 200);
+Scalar upper_black = Scalar(0, 0, 0);
+Scalar lower_black = Scalar(180, 255, 55);
 
 int robot;
 
 #define BASE_SPEED 20;
 
 enum State { LINE_FOLLOWING, IDLE, IMG_RECOG };
-
 enum State state;
+
+enum CameraPos { UP, DOWN };
+enum CameraPos cameraPos;
 
 void setup(void) {
   wiringPiSetupGpio();      // 初始化wiringPi库，使用BCM编号系统
@@ -60,7 +67,7 @@ bool detectContours(const Mat &inputFrame, vector<Point> &largestContour) {
 // This function takes a frame of the video as input, performs preprocessing
 // steps, and returns a binary mask of the region of interest (black -> white,
 // other colors -> black)
-void preprocessFrame(const cv::Mat &inputFrame, cv::Mat &outputFrame) {
+void preprocessFrame(const Mat &inputFrame, Mat &outputFrame) {
   // convert input frame to HSV color space
   Mat frame_hsv;
   cvtColor(inputFrame, frame_hsv, COLOR_BGR2HSV);
@@ -84,29 +91,30 @@ void preprocessFrame(const cv::Mat &inputFrame, cv::Mat &outputFrame) {
   erode(rangeFilteredMask, outputFrame, kernel, Point(-1, -1), 1);
 }
 
-cv::Mat imgcap() {
-  cv::Mat frame;
-  cv::VideoCapture cap(0);
+Mat imgcap() {
+  VideoCapture cap(0);
   cap >> frame;
 
   int x = frame.cols * 0.02;
   int y = frame.rows * 0.5;
   int width = frame.cols;
-  int height = frame.rows * 0.3 / split;
+  int height = frame.rows * 0.3;
 
   Rect roi(x, y, width, height);
 
   return frame(roi);
 }
-// Function to calculate error from a given frame
+// Function to calculate g_error from a given frame
 void errorCalc() {
   // read frame
-  cv::Mat frame = imgcap();
+  frame = imgcap();
 
-  cv::Mat processed_frame;
-  preprocessFrame(frame(roi), processed_frame);
+  Mat processed_frame;
+  preprocessFrame(frame, processed_frame);
 
   vector<Point> largestContour;
+
+  Mat resultFrame = frame.clone();
 
   // if there were contours found
   if (detectContours(processed_frame, largestContour) == true) {
@@ -116,49 +124,27 @@ void errorCalc() {
 
     // Draw the largest contour and center of the largest contour on the
     // frame
-    drawContours(resultFrame(roi), vector<vector<Point>>{largestContour}, -1,
+    drawContours(resultFrame, vector<vector<Point>>{largestContour}, -1,
                  Scalar(255, 255, 255), 1);
-    circle(resultFrame(roi), center, 5, Scalar(0, 255, 255), -1);
+    circle(resultFrame, center, 5, Scalar(0, 255, 255), -1);
 
     // draw the distance from the center of the frame to the center of the
     // largest contour
-    double distance = center.x - roi.width / 2;
-    error = distance;
+    float distance = center.x - frame.cols / 2;
+    g_error = distance;
 
-    line(resultFrame(roi), center, Point(roi.width / 2, center.y),
-         Scalar(0, 255, 255), 1);
-
-    // puttext on the center of the line
-    putText(resultFrame(roi), to_string(distance),
-            Point(roi.width / 2 - 5, center.y - 5), FONT_HERSHEY_SIMPLEX, 0.2,
-            Scalar(255, 255, 255), 1, LINE_AA);
-
-    ostringstream text;
-    text << "(" << center.x << "," << center.y << ")";
-
-    // Check if the center of the largest contour is within the black line
-    // cout << "Value at center: " <<
-    // (int)preprocessedFrame.at<uchar>(center.y, center.x) << endl;
-    if (preprocessedFrame.at<uchar>(center.y, center.x) == 255) {
-      putText(resultFrame(roi), text.str(), Point(20, roi.height / 2),
-              FONT_HERSHEY_SIMPLEX, 0.5, Scalar(255, 255, 255), 1, LINE_AA);
-    } else {
-      putText(resultFrame(roi), text.str(), Point(20, roi.height / 2),
-              FONT_HERSHEY_SIMPLEX, 0.5, Scalar(0, 0, 255), 1, LINE_AA);
-    }
-  } else // no contours found
-  {
-    error =
+  } else { // no contours found
+    g_error = -0.1;
   }
 }
 
-// calculate pid values using error and modify offset
+// calculate pid values using g_error and modify offset
 void offsetCalc() {
   kp = 1;
   ki = 0;
   kd = 0;
 
-  offset = kp * error + ki * error + kd * (error - error_last);
+  offset = kp * g_error + ki * g_error + kd * (g_error - error_last);
 }
 
 void sendCmd() {
@@ -179,17 +165,14 @@ void sendCmd() {
     sprintf(cmd, "#Baffff %03d %03d %03d %03d", left_speed, left_speed,
             right_speed, right_speed);
   }
-  SerialPuts(robot, cmd);
+  serialPuts(robot, cmd);
 }
 
 bool existPink(void) {
   // read frame
   // detect pink color
-  cv::Mat frame;
-  cv::VideoCapture cap(0);
-  cap >> frame;
-  cv::cvtColor(frame, frame, cv::COLOR_BGR2HSV);
-  cv::inRange(frame, lower_pink, upper_pink, frame);
+  frame = imgcap();
+  inRange(frame, lower_pink, upper_pink, frame);
   if (countNonZero(frame) >= 100) { // TODO: adjust threshold
     return true;
   } else {
@@ -197,15 +180,15 @@ bool existPink(void) {
   }
 }
 
+// TODO: finish reset function
 void reset() {}
 
 void moveCamera() {
-  softPwmWrite(PWM_PIN, 25);
-  delay(1000); // 舵机转到22的位置
-  softPwmWrite(PWM_PIN, 15);
-  delay(1000); // 舵机转到22的位置
-  softPwmWrite(PWM_PIN, 25);
-  delay(1000); // 舵机转到22的位置
+  if (cameraPos == DOWN)
+    softPwmWrite(PWM_PIN, 25);
+  else if (cameraPos == UP)
+    softPwmWrite(PWM_PIN, 15);
+  delay(500); // 舵机转到22的位置
 }
 
 int main() {
@@ -217,7 +200,7 @@ int main() {
         state = IMG_RECOG;
         break;
       }
-      // calculate error from the center of the line
+      // calculate g_error from the center of the line
       errorCalc();
       // calculate offset of motors using pid
       offsetCalc();
@@ -228,9 +211,8 @@ int main() {
       // move camera up
       moveCamera();
       // capture image
-      cv::Mat frame = imgcap();
+      frame = imgcap();
       // template matching
-
       break;
     case IDLE:
       reset();
