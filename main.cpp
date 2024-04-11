@@ -7,12 +7,14 @@
 #define PWM_PIN 18 // 定义PWM引脚
 
 int kp, ki, kd;
-int offset, error, error_last;
+float offset, error, error_last;
 
 cv::Scalar upper_pink = cv::Scalar(180, 50, 200);
 cv::Scalar lower_pink = cv::Scalar(180, 50, 200);
 cv::Scalar upper_black = cv::Scalar(180, 50, 200);
 cv::Scalar lower_black = cv::Scalar(180, 50, 200);
+
+int robot;
 
 #define BASE_SPEED 20;
 
@@ -146,8 +148,10 @@ void errorCalc() {
     }
   } else // no contours found
   {
+    error =
   }
 }
+
 // calculate pid values using error and modify offset
 void offsetCalc() {
   kp = 1;
