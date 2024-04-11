@@ -1,3 +1,4 @@
+#include <chrono>
 #include <iostream>
 #include <locale>
 #include <opencv2/opencv.hpp>
@@ -110,30 +111,32 @@ void preprocessFrame(const Mat &inputFrame, Mat &outputFrame) {
 
 // Function to capture an image from the camera, extract the roi, and return it
 Mat imgcap() {
-  VideoCapture cap(0);
-  cap >> g_frame;
 
   int x = g_frame.cols * 0.02;
   int y = g_frame.rows * 0.5;
   int width = g_frame.cols;
   int height = g_frame.rows * 0.3;
 
-  Rect roi(x, y, width, height);
+  printf("%d%d%d%d", x, y, width, height);
+  //
+  // Rect roi(x, y, width, height);
 
-  return g_frame(roi);
+  // return g_frame(roi);
+  return g_frame;
 }
 
 // Function to calculate g_error from a given frame
 void errorCalc() {
   // read frame
-  g_frame = imgcap();
+  Mat frame;
+  frame = imgcap();
 
   Mat processed_frame;
-  preprocessFrame(g_frame, processed_frame);
+  preprocessFrame(frame, processed_frame);
 
   vector<Point> largestContour;
 
-  Mat resultFrame = g_frame.clone();
+  Mat resultFrame = frame.clone();
 
   // if there were contours found
   if (detectContours(processed_frame, largestContour) == true) {
@@ -149,7 +152,7 @@ void errorCalc() {
 
     // draw the distance from the center of the frame to the center of the
     // largest contour
-    int distance = (int)center.x - g_frame.cols / 2;
+    int distance = (int)center.x - frame.cols / 2;
     g_error = (float)distance;
   } else { // no contours found
     g_error = -0.1;
@@ -186,12 +189,14 @@ void sendCmd() {
   serialPuts(robot, cmd);
 }
 
-bool existPink(void) {
+bool existPink() {
   // read frame
   // detect pink color
-  g_frame = imgcap();
-  inRange(g_frame, lower_pink, upper_pink, g_frame);
-  if (countNonZero(g_frame) >= 100) { // TODO: adjust threshold
+  Mat frame;
+  frame = imgcap();
+  inRange(frame, lower_pink, upper_pink, frame);
+
+  if (countNonZero(frame) >= 100) { // TODO: adjust threshold
     return true;
   } else {
     return false;
@@ -212,13 +217,13 @@ void moveCamera() {
 Task templateMatching() {
   Task task = NONE;
   auto start_time = chrono::high_resolution_clock::now();
-  while (task == NONE &&
-         chorno::high_resolution_clock::now() - start_time < 3) {
+  while (task == NONE && chrono::high_resolution_clock::now() - start_time <
+                             chrono::seconds(3)) {
     // read frame
-    g_frame = imgcap();
     Mat frame;
-    cvtColor(g_frame, frame, COLOR_BGR2GRAY);
-    equateHist(frame, frame);
+    frame = imgcap();
+    cvtColor(frame, frame, COLOR_BGR2GRAY);
+    equalizeHist(frame, frame);
     // loop through all templates and find the best match
     for (int i = 0; i < g_templates.size(); i++) {
       Mat result;
@@ -250,7 +255,16 @@ void performTask(Task task) {
 
 int main() {
   setup();
+  robot = serialOpen("/dev/ttyAMA0", 57600); // returns int, -1 for error
+
+  VideoCapture cap(0);
+  state = LINE_FOLLOWING;
+
   while (1) {
+    printf("%d\n", (int)state);
+
+    cap >> g_frame;
+
     switch (state) {
     case LINE_FOLLOWING:
       if (existPink()) {
@@ -269,16 +283,17 @@ int main() {
       cameraPos = UP;
       moveCamera();
       // capture image
-      g_frame = imgcap();
+      // Mat frame;
+      // frame = imgcap();
       // template matching
-      Task task = templateMatching();
-
-      // move camera DOWN
-      cameraPos = DOWN;
-      moveCamera();
-
-      // perform task
-      performTask(task);
+      // Task task = templateMatching();
+      //
+      // // move camera DOWN
+      // cameraPos = DOWN;
+      // moveCamera();
+      //
+      // // perform task
+      // performTask(task);
       break;
     case IDLE:
       reset();
