@@ -11,6 +11,8 @@
 #include <wiringSerial.h>
 
 #define PWM_PIN 25 // wiringpi pin (not BCM)
+#define RED_LED 23
+#define BLUE_LED 24
 
 using namespace std;
 using namespace cv;
@@ -20,8 +22,22 @@ float g_offset, g_error, g_error_last;
 Mat g_frame;
 vector<Mat> g_templates;
 
+// TODO: adjust values
+Scalar upper_blue = Scalar(90, 50, 50);
+Scalar lower_blue = Scalar(130, 255, 255);
+
+Scalar upper_green = Scalar(40, 50, 50);
+Scalar lower_green = Scalar(80, 255, 255);
+
+Scalar upper_yellow = Scalar(20, 100, 100);
+Scalar lower_yellow = Scalar(40, 255, 255);
+
+Scalar upper_red = Scalar(0, 100, 100);
+Scalar lower_red = Scalar(10, 255, 255);
+
 Scalar upper_pink = Scalar(130, 50, 50);
 Scalar lower_pink = Scalar(180, 255, 255);
+
 Scalar upper_black = Scalar(0, 0, 0);
 Scalar lower_black = Scalar(180, 255, 55);
 
@@ -100,6 +116,9 @@ void moveCamera() {
 void setup(void) {
   wiringPiSetup();
   pinMode(PWM_PIN, OUTPUT);
+  pinMode(RED_LED, OUTPUT);
+  pinMode(BLUE_LED, OUTPUT);
+
   digitalWrite(PWM_PIN, LOW);
   softPwmCreate(PWM_PIN, 0, 200);
   state = LINE_FOLLOWING;
@@ -149,18 +168,18 @@ void preprocessFrame(const Mat &inputFrame, Mat &outputFrame) {
   GaussianBlur(frame_hsv, frame_hsv, Size(blurSize, blurSize), 0);
 
   // Filter out the colors that are not in the range of HSV values of interest
-  Mat rangeFilteredMask;
+  Mat mask;
 
   // method 1: HSV inrange filtering
-  inRange(frame_hsv, lower_black, upper_black, rangeFilteredMask);
+  inRange(frame_hsv, lower_black, upper_black, mask);
 
   // Apply morphological operations to remove small noise and fill in gaps in
   // the mask
   int dilationSize = 12; // Adjust the size of the dilation kernel
   Mat kernel =
       getStructuringElement(MORPH_RECT, Size(dilationSize, dilationSize));
-  dilate(rangeFilteredMask, rangeFilteredMask, kernel, Point(-1, -1), 1);
-  erode(rangeFilteredMask, outputFrame, kernel, Point(-1, -1), 1);
+  dilate(mask, mask, kernel, Point(-1, -1), 1);
+  erode(mask, outputFrame, kernel, Point(-1, -1), 1);
 }
 
 // Function to capture an image from the camera, extract the roi, and return it
@@ -192,6 +211,10 @@ void errorCalc() {
 
   Mat resultFrame = frame.clone();
 
+  imshow("pid", resultFrame);
+  if (waitKey(1) == 'q') {
+    return;
+  }
   // if there were contours found
   if (detectContours(processed_frame, largestContour) == true) {
     // find the center of the largest contour and puttext on the frame
@@ -264,7 +287,15 @@ bool existPink() {
 }
 
 // TODO: finish reset function
-void reset() {}
+void reset() {
+  digitalWrite(PWM_PIN, LOW);
+  softPwmCreate(PWM_PIN, 0, 200);
+  state = LINE_FOLLOWING;
+  cameraPos = DOWN;
+  moveCamera();
+
+  // loadTemplates();
+}
 
 Task templateMatching() {
   Task task = NONE;
@@ -308,15 +339,40 @@ Task templateMatching() {
 
 // perform the appropriate task according to input
 void performTask(Task task) {
-  bool taskIncomplete = true;
-  while (taskIncomplete) {
-    switch (task) {
-    case PLAY_MUSIC:
-      printf("executing task PLAY_MUSIC");
-      // system("omxplayer /home/pi/Desktop/p6/3.MP3");
-      taskIncomplete = false;
-      break;
-    }
+  switch (task) {
+  case PLAY_MUSIC:
+    printf("executing task PLAY_MUSIC");
+    // system("omxplayer /home/pi/Desktop/p6/3.MP3");
+    break;
+  // case COUNT_SHAPES1:
+  // count the number of shapes and display on lcd
+  case ALARM_FLASH:
+    // flash red blue alternatively
+    digitalWrite(RED_LED, HIGH);
+    delay(500);
+    digitalWrite(RED_LED, LOW);
+    delay(10);
+
+    digitalWrite(BLUE_LED, HIGH);
+    delay(500);
+    digitalWrite(BLUE_LED, LOW);
+    task = NONE;
+
+    break;
+    // case APPROACH_AND_STOP:
+    // use ultrasound sensor to stop at 5cm distance
+    // case KICK_BALL:
+    // kick the football to gate
+    // case TRAFFIC_LIGHT:
+    // stop for red light and wait until green light
+    // case BLUE:
+    // run between split
+    // case GREEN:
+    // run with higher speed
+    // case RED:
+    // run with lower speed
+    // case YELLOW:
+    // run with normal speed
   }
 }
 
@@ -343,7 +399,7 @@ int main() {
       }
       // calculate g_error from the center of the line
       errorCalc();
-      // calculate offset of motors using pid
+      // calculate g_offset of motors using pid
       offsetCalc();
       // send command to the car
       sendCmd();
@@ -354,24 +410,30 @@ int main() {
         cameraPos = UP;
         moveCamera();
       }
-      // capture image
-      // Mat frame;
-      // frame = imgcap( );
+
       // template matching
-      currentTask = templateMatching();
-      if (currentTask != NONE) {
-        // move camera DOWN
-        cameraPos = DOWN;
-        moveCamera();
-
-        // perform task
-        performTask(currentTask);
-        currentTask = NONE;
-
-        state = LINE_FOLLOWING;
-
+      if (currentTask == NONE) {
+        currentTask = templateMatching();
         break;
       }
+
+      // the current task is no longer none, perform the task
+      // move camera DOWN
+      if (cameraPos != DOWN) {
+        cameraPos = DOWN;
+        moveCamera();
+      }
+
+      // perform task
+      performTask(currentTask);
+
+      // if current task is none, it means that the task was completed, Thus
+      // return to the line following state
+      if (currentTask == NONE) {
+        state = LINE_FOLLOWING;
+      }
+      break;
+
       break;
     case IDLE:
       reset();
