@@ -1,3 +1,4 @@
+#include <algorithm> // for std::sort
 #include <chrono>
 #include <dirent.h>
 #include <exception>
@@ -5,6 +6,7 @@
 #include <opencv2/opencv.hpp>
 #include <softPwm.h>
 #include <stdio.h>
+#include <vector> // for std::vector
 #include <wiringPi.h>
 #include <wiringSerial.h>
 
@@ -34,7 +36,9 @@ enum CameraPos { UP, DOWN };
 enum CameraPos cameraPos;
 
 typedef enum {
-  COUNT_SHAPES,
+  COUNT_SHAPES1,
+  COUNT_SHAPES2,
+  COUNT_SHAPES3,
   BLUE,
   GREEN,
   RED,
@@ -54,23 +58,43 @@ void loadTemplates() {
   string directory = "./templates/";
   DIR *dir;
   struct dirent *ent;
+  vector<string> filenames; // Store the file names here
 
   if ((dir = opendir(directory.c_str())) != NULL) {
     while ((ent = readdir(dir)) != NULL) {
       string filename = ent->d_name;
       if (filename.length() >= 4 &&
           filename.substr(filename.length() - 4) == ".png") {
-        cv::Mat image = cv::imread(directory + filename, cv::IMREAD_GRAYSCALE);
-        if (!image.empty()) {
-          g_templates.push_back(image);
-          cout << "Successfully loaded: " << filename << endl;
-        }
+        filenames.push_back(filename); // Store the file names
       }
     }
     closedir(dir);
+
+    // Sort the file names
+    sort(filenames.begin(), filenames.end());
+
+    // Load and process the images in sorted order
+    for (const auto &filename : filenames) {
+      cv::Mat image = cv::imread(directory + filename, cv::IMREAD_GRAYSCALE);
+      if (!image.empty()) {
+        resize(image, image, Size(320, 240));
+        g_templates.push_back(image);
+        cout << "Successfully loaded: " << filename << endl;
+      }
+    }
   } else {
     cerr << "Error opening directory" << endl;
   }
+}
+
+void moveCamera() {
+  if (cameraPos == DOWN)
+    softPwmWrite(PWM_PIN, 25);
+  else if (cameraPos == UP)
+    softPwmWrite(PWM_PIN, 15);
+  delay(500);
+  // turn off the servo motor so it doesn't shake
+  softPwmWrite(PWM_PIN, 0);
 }
 
 void setup(void) {
@@ -78,7 +102,10 @@ void setup(void) {
   pinMode(PWM_PIN, OUTPUT);
   digitalWrite(PWM_PIN, LOW);
   softPwmCreate(PWM_PIN, 0, 200);
-  state = IDLE;
+  state = LINE_FOLLOWING;
+  cameraPos = DOWN;
+  moveCamera();
+
   loadTemplates();
 }
 
@@ -138,16 +165,18 @@ void preprocessFrame(const Mat &inputFrame, Mat &outputFrame) {
 
 // Function to capture an image from the camera, extract the roi, and return it
 Mat imgcap(float yRatio, float heightRatio) {
+  Mat frame;
+  resize(g_frame, frame, Size(320, 240));
 
   int x = 0;
-  int y = g_frame.rows * yRatio;
-  int width = g_frame.cols;
-  int height = g_frame.rows * heightRatio;
+  int y = frame.rows * yRatio;
+  int width = frame.cols;
+  int height = frame.rows * heightRatio;
 
   // printf("x: %d y: %d width: %d height: %d", x, y, width, height);
   Rect roi(x, y, width, height);
 
-  return g_frame(roi);
+  return frame(roi);
 }
 
 // Function to calculate g_error from a given frame
@@ -237,46 +266,41 @@ bool existPink() {
 // TODO: finish reset function
 void reset() {}
 
-void moveCamera() {
-  if (cameraPos == DOWN)
-    softPwmWrite(PWM_PIN, 25);
-  else if (cameraPos == UP)
-    softPwmWrite(PWM_PIN, 15);
-  delay(500);
-  // turn off the servo motor so it doesn't shake
-  softPwmWrite(PWM_PIN, 0);
-}
-
 Task templateMatching() {
   Task task = NONE;
-  auto start_time = chrono::high_resolution_clock::now();
-  while (task == NONE) {
-    // read frame
-    // if (chrono::high_resolution_clock::now() - start_time <
-    //     chrono::seconds(10)) {
-    //   printf("Timeout\n");
-    //   return NONE;
-    // }
-    Mat frame;
-    frame = imgcap(0, 1);
-    cvtColor(frame, frame, COLOR_BGR2GRAY);
-    equalizeHist(frame, frame);
-    // loop through all templates and find the best match
-    for (int i = 0; i < g_templates.size(); i++) {
-      printf("Evaluating template no.%d\n", i);
-      Mat result;
-      printf("frame: %d template: %d", frame.size().height,
-             g_templates[i].size().height);
-      matchTemplate(frame, g_templates[i], result, TM_CCOEFF_NORMED);
-      double minVal, maxVal;
-      Point minLoc, maxLoc;
-      minMaxLoc(result, &minVal, &maxVal, &minLoc, &maxLoc, Mat());
-      if (maxVal > 0.6 && maxVal > maxVal) {
-        printf("Better match found... \n");
-        printf("maxVal: %f\n", maxVal);
-        maxVal = maxVal;
-        task = (Task)i;
-      }
+  // auto start_time = chrono::high_resolution_clock::now();
+  // read frame
+  // if (chrono::high_resolution_clock::now() - start_time <
+  //     chrono::seconds(10)) {
+  //   printf("Timeout\n");
+  //   return NONE;
+  // }
+  Mat frame;
+  frame = imgcap(0, 1);
+  cvtColor(frame, frame, COLOR_BGR2GRAY);
+  equalizeHist(frame, frame);
+  // loop through all templates and find the best match
+  for (int i = 0; i < g_templates.size(); i++) {
+    printf("Template No.%d: ", i);
+    Mat result;
+    // printf("frame: %d template: %d", frame.size().height,
+    //        g_templates[i].size().height);
+    matchTemplate(frame, g_templates[i], result, TM_CCOEFF_NORMED);
+    double minVal, maxVal;
+    Point minLoc, maxLoc;
+
+    imshow("result", result);
+    imshow("frame", frame);
+    if (waitKey(1) == 'q') {
+      return PLAY_MUSIC;
+    }
+
+    minMaxLoc(result, &minVal, &maxVal, &minLoc, &maxLoc, Mat());
+    printf("maxVal: %f\n", maxVal);
+    if (maxVal > 0.6 && maxVal > maxVal) {
+      printf("Better match found... \n");
+      maxVal = maxVal;
+      task = (Task)i;
     }
   }
   return task;
@@ -288,8 +312,8 @@ void performTask(Task task) {
   while (taskIncomplete) {
     switch (task) {
     case PLAY_MUSIC:
-      printf("executing task");
-      system("omxplayer /home/pi/Desktop/p6/3.MP3");
+      printf("executing task PLAY_MUSIC");
+      // system("omxplayer /home/pi/Desktop/p6/3.MP3");
       taskIncomplete = false;
       break;
     }
@@ -326,8 +350,10 @@ int main() {
       break;
     case IMG_RECOG:
       // move camera up
-      cameraPos = UP;
-      moveCamera();
+      if (cameraPos != UP) {
+        cameraPos = UP;
+        moveCamera();
+      }
       // capture image
       // Mat frame;
       // frame = imgcap( );
@@ -340,6 +366,10 @@ int main() {
 
         // perform task
         performTask(currentTask);
+        currentTask = NONE;
+
+        state = LINE_FOLLOWING;
+
         break;
       }
       break;
