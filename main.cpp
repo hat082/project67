@@ -1,14 +1,14 @@
 #include <chrono>
-#include <iostream>
+#include <dirent.h>
+#include <exception>
 #include <locale>
 #include <opencv2/opencv.hpp>
 #include <softPwm.h>
 #include <stdio.h>
-#include <vector>
 #include <wiringPi.h>
 #include <wiringSerial.h>
 
-#define PWM_PIN 18 // 定义PWM引脚
+#define PWM_PIN 25 // wiringpi pin (not BCM)
 
 using namespace std;
 using namespace cv;
@@ -18,8 +18,8 @@ float g_offset, g_error, g_error_last;
 Mat g_frame;
 vector<Mat> g_templates;
 
-Scalar upper_pink = Scalar(180, 50, 200);
-Scalar lower_pink = Scalar(180, 50, 200);
+Scalar upper_pink = Scalar(130, 50, 50);
+Scalar lower_pink = Scalar(180, 255, 255);
 Scalar upper_black = Scalar(0, 0, 0);
 Scalar lower_black = Scalar(180, 255, 55);
 
@@ -27,7 +27,7 @@ int robot;
 
 #define BASE_SPEED 20;
 
-enum State { LINE_FOLLOWING, IDLE, IMG_RECOG, PERFORM_TASK };
+enum State { LINE_FOLLOWING, IMG_RECOG, PERFORM_TASK, IDLE };
 enum State state;
 
 enum CameraPos { UP, DOWN };
@@ -47,12 +47,39 @@ typedef enum {
   NONE
 } Task;
 
+void loadTemplates() {
+  // Load all PNG images under the ./templates/ directory
+  // Grayscale images
+
+  string directory = "./templates/";
+  DIR *dir;
+  struct dirent *ent;
+
+  if ((dir = opendir(directory.c_str())) != NULL) {
+    while ((ent = readdir(dir)) != NULL) {
+      string filename = ent->d_name;
+      if (filename.length() >= 4 &&
+          filename.substr(filename.length() - 4) == ".png") {
+        cv::Mat image = cv::imread(directory + filename, cv::IMREAD_GRAYSCALE);
+        if (!image.empty()) {
+          g_templates.push_back(image);
+          cout << "Successfully loaded: " << filename << endl;
+        }
+      }
+    }
+    closedir(dir);
+  } else {
+    cerr << "Error opening directory" << endl;
+  }
+}
+
 void setup(void) {
-  wiringPiSetupGpio();      // 初始化wiringPi库，使用BCM编号系统
-  pinMode(PWM_PIN, OUTPUT); // 配置舵机输出引脚，并设置为默认位置
+  wiringPiSetup();
+  pinMode(PWM_PIN, OUTPUT);
   digitalWrite(PWM_PIN, LOW);
-  softPwmCreate(PWM_PIN, 0, 200); // 初始化软件PWM
+  softPwmCreate(PWM_PIN, 0, 200);
   state = IDLE;
+  loadTemplates();
 }
 
 // Function to detect contours
@@ -110,26 +137,24 @@ void preprocessFrame(const Mat &inputFrame, Mat &outputFrame) {
 }
 
 // Function to capture an image from the camera, extract the roi, and return it
-Mat imgcap() {
+Mat imgcap(float yRatio, float heightRatio) {
 
-  int x = g_frame.cols * 0.02;
-  int y = g_frame.rows * 0.5;
+  int x = 0;
+  int y = g_frame.rows * yRatio;
   int width = g_frame.cols;
-  int height = g_frame.rows * 0.3;
+  int height = g_frame.rows * heightRatio;
 
-  printf("%d%d%d%d", x, y, width, height);
-  //
-  // Rect roi(x, y, width, height);
+  // printf("x: %d y: %d width: %d height: %d", x, y, width, height);
+  Rect roi(x, y, width, height);
 
-  // return g_frame(roi);
-  return g_frame;
+  return g_frame(roi);
 }
 
 // Function to calculate g_error from a given frame
 void errorCalc() {
   // read frame
   Mat frame;
-  frame = imgcap();
+  frame = imgcap(0.5, 0.3);
 
   Mat processed_frame;
   preprocessFrame(frame, processed_frame);
@@ -193,12 +218,18 @@ bool existPink() {
   // read frame
   // detect pink color
   Mat frame;
-  frame = imgcap();
+  frame = imgcap(0.5, 0.3);
   inRange(frame, lower_pink, upper_pink, frame);
+
+  imshow("Pink", frame);
+  if (waitKey(1) == 'q') {
+    return true;
+  }
 
   if (countNonZero(frame) >= 100) { // TODO: adjust threshold
     return true;
   } else {
+    printf(" pink pixels: %d ", countNonZero(frame));
     return false;
   }
 }
@@ -211,27 +242,38 @@ void moveCamera() {
     softPwmWrite(PWM_PIN, 25);
   else if (cameraPos == UP)
     softPwmWrite(PWM_PIN, 15);
-  delay(500); // 舵机转到22的位置
+  delay(500);
+  // turn off the servo motor so it doesn't shake
+  softPwmWrite(PWM_PIN, 0);
 }
 
 Task templateMatching() {
   Task task = NONE;
   auto start_time = chrono::high_resolution_clock::now();
-  while (task == NONE && chrono::high_resolution_clock::now() - start_time <
-                             chrono::seconds(3)) {
+  while (task == NONE) {
     // read frame
+    // if (chrono::high_resolution_clock::now() - start_time <
+    //     chrono::seconds(10)) {
+    //   printf("Timeout\n");
+    //   return NONE;
+    // }
     Mat frame;
-    frame = imgcap();
+    frame = imgcap(0, 1);
     cvtColor(frame, frame, COLOR_BGR2GRAY);
     equalizeHist(frame, frame);
     // loop through all templates and find the best match
     for (int i = 0; i < g_templates.size(); i++) {
+      printf("Evaluating template no.%d\n", i);
       Mat result;
+      printf("frame: %d template: %d", frame.size().height,
+             g_templates[i].size().height);
       matchTemplate(frame, g_templates[i], result, TM_CCOEFF_NORMED);
       double minVal, maxVal;
       Point minLoc, maxLoc;
       minMaxLoc(result, &minVal, &maxVal, &minLoc, &maxLoc, Mat());
       if (maxVal > 0.6 && maxVal > maxVal) {
+        printf("Better match found... \n");
+        printf("maxVal: %f\n", maxVal);
         maxVal = maxVal;
         task = (Task)i;
       }
@@ -246,7 +288,8 @@ void performTask(Task task) {
   while (taskIncomplete) {
     switch (task) {
     case PLAY_MUSIC:
-      system("/usr/bin/omxplayer /home/pi/Desktop/p6/3.MP3");
+      printf("executing task");
+      system("omxplayer /home/pi/Desktop/p6/3.MP3");
       taskIncomplete = false;
       break;
     }
@@ -258,13 +301,16 @@ int main() {
   robot = serialOpen("/dev/ttyAMA0", 57600); // returns int, -1 for error
 
   VideoCapture cap(0);
+
+  getchar();
   state = LINE_FOLLOWING;
 
   while (1) {
-    printf("%d\n", (int)state);
+    printf("state: %d\n", (int)state);
 
     cap >> g_frame;
 
+    Task currentTask = NONE;
     switch (state) {
     case LINE_FOLLOWING:
       if (existPink()) {
@@ -284,16 +330,18 @@ int main() {
       moveCamera();
       // capture image
       // Mat frame;
-      // frame = imgcap();
+      // frame = imgcap( );
       // template matching
-      // Task task = templateMatching();
-      //
-      // // move camera DOWN
-      // cameraPos = DOWN;
-      // moveCamera();
-      //
-      // // perform task
-      // performTask(task);
+      currentTask = templateMatching();
+      if (currentTask != NONE) {
+        // move camera DOWN
+        cameraPos = DOWN;
+        moveCamera();
+
+        // perform task
+        performTask(currentTask);
+        break;
+      }
       break;
     case IDLE:
       reset();
