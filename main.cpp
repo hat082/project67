@@ -1,7 +1,9 @@
 #include <iostream>
+#include <locale>
 #include <opencv2/opencv.hpp>
 #include <softPwm.h>
 #include <stdio.h>
+#include <vector>
 #include <wiringPi.h>
 #include <wiringSerial.h>
 
@@ -10,9 +12,10 @@
 using namespace std;
 using namespace cv;
 
-int kp, ki, kd;
-float offset, g_error, error_last;
-Mat frame;
+float g_kp, g_ki, g_kd;
+float g_offset, g_error, g_error_last;
+Mat g_frame;
+vector<Mat> g_templates;
 
 Scalar upper_pink = Scalar(180, 50, 200);
 Scalar lower_pink = Scalar(180, 50, 200);
@@ -23,11 +26,25 @@ int robot;
 
 #define BASE_SPEED 20;
 
-enum State { LINE_FOLLOWING, IDLE, IMG_RECOG };
+enum State { LINE_FOLLOWING, IDLE, IMG_RECOG, PERFORM_TASK };
 enum State state;
 
 enum CameraPos { UP, DOWN };
 enum CameraPos cameraPos;
+
+typedef enum {
+  COUNT_SHAPES,
+  BLUE,
+  GREEN,
+  RED,
+  YELLOW,
+  PLAY_MUSIC,
+  ALARM_FLASH,
+  APPROACH_AND_STOP,
+  KICK_BALL,
+  TRAFFIC_LIGHT,
+  NONE
+} Task;
 
 void setup(void) {
   wiringPiSetupGpio();      // 初始化wiringPi库，使用BCM编号系统
@@ -91,30 +108,32 @@ void preprocessFrame(const Mat &inputFrame, Mat &outputFrame) {
   erode(rangeFilteredMask, outputFrame, kernel, Point(-1, -1), 1);
 }
 
+// Function to capture an image from the camera, extract the roi, and return it
 Mat imgcap() {
   VideoCapture cap(0);
-  cap >> frame;
+  cap >> g_frame;
 
-  int x = frame.cols * 0.02;
-  int y = frame.rows * 0.5;
-  int width = frame.cols;
-  int height = frame.rows * 0.3;
+  int x = g_frame.cols * 0.02;
+  int y = g_frame.rows * 0.5;
+  int width = g_frame.cols;
+  int height = g_frame.rows * 0.3;
 
   Rect roi(x, y, width, height);
 
-  return frame(roi);
+  return g_frame(roi);
 }
+
 // Function to calculate g_error from a given frame
 void errorCalc() {
   // read frame
-  frame = imgcap();
+  g_frame = imgcap();
 
   Mat processed_frame;
-  preprocessFrame(frame, processed_frame);
+  preprocessFrame(g_frame, processed_frame);
 
   vector<Point> largestContour;
 
-  Mat resultFrame = frame.clone();
+  Mat resultFrame = g_frame.clone();
 
   // if there were contours found
   if (detectContours(processed_frame, largestContour) == true) {
@@ -130,9 +149,8 @@ void errorCalc() {
 
     // draw the distance from the center of the frame to the center of the
     // largest contour
-    float distance = center.x - frame.cols / 2;
-    g_error = distance;
-
+    int distance = (int)center.x - g_frame.cols / 2;
+    g_error = (float)distance;
   } else { // no contours found
     g_error = -0.1;
   }
@@ -140,18 +158,18 @@ void errorCalc() {
 
 // calculate pid values using g_error and modify offset
 void offsetCalc() {
-  kp = 1;
-  ki = 0;
-  kd = 0;
+  g_kp = 0.3;
+  g_ki = 0.003;
+  g_kd = 3.2;
 
-  offset = kp * g_error + ki * g_error + kd * (g_error - error_last);
+  g_offset = g_kp * g_error + g_ki * g_error + g_kd * (g_error - g_error_last);
 }
 
 void sendCmd() {
   int left_speed, right_speed;
   char cmd[50];
-  left_speed = BASE_SPEED + offset;
-  right_speed = BASE_SPEED - offset;
+  left_speed = BASE_SPEED + g_offset;
+  right_speed = BASE_SPEED - g_offset;
 
   if (left_speed < 0) {
     left_speed *= -1;
@@ -171,9 +189,9 @@ void sendCmd() {
 bool existPink(void) {
   // read frame
   // detect pink color
-  frame = imgcap();
-  inRange(frame, lower_pink, upper_pink, frame);
-  if (countNonZero(frame) >= 100) { // TODO: adjust threshold
+  g_frame = imgcap();
+  inRange(g_frame, lower_pink, upper_pink, g_frame);
+  if (countNonZero(g_frame) >= 100) { // TODO: adjust threshold
     return true;
   } else {
     return false;
@@ -189,6 +207,45 @@ void moveCamera() {
   else if (cameraPos == UP)
     softPwmWrite(PWM_PIN, 15);
   delay(500); // 舵机转到22的位置
+}
+
+Task templateMatching() {
+  Task task = NONE;
+  auto start_time = chrono::high_resolution_clock::now();
+  while (task == NONE &&
+         chorno::high_resolution_clock::now() - start_time < 3) {
+    // read frame
+    g_frame = imgcap();
+    Mat frame;
+    cvtColor(g_frame, frame, COLOR_BGR2GRAY);
+    equateHist(frame, frame);
+    // loop through all templates and find the best match
+    for (int i = 0; i < g_templates.size(); i++) {
+      Mat result;
+      matchTemplate(frame, g_templates[i], result, TM_CCOEFF_NORMED);
+      double minVal, maxVal;
+      Point minLoc, maxLoc;
+      minMaxLoc(result, &minVal, &maxVal, &minLoc, &maxLoc, Mat());
+      if (maxVal > 0.6 && maxVal > maxVal) {
+        maxVal = maxVal;
+        task = (Task)i;
+      }
+    }
+  }
+  return task;
+}
+
+// perform the appropriate task according to input
+void performTask(Task task) {
+  bool taskIncomplete = true;
+  while (taskIncomplete) {
+    switch (task) {
+    case PLAY_MUSIC:
+      system("/usr/bin/omxplayer /home/pi/Desktop/p6/3.MP3");
+      taskIncomplete = false;
+      break;
+    }
+  }
 }
 
 int main() {
@@ -209,10 +266,19 @@ int main() {
       break;
     case IMG_RECOG:
       // move camera up
+      cameraPos = UP;
       moveCamera();
       // capture image
-      frame = imgcap();
+      g_frame = imgcap();
       // template matching
+      Task task = templateMatching();
+
+      // move camera DOWN
+      cameraPos = DOWN;
+      moveCamera();
+
+      // perform task
+      performTask(task);
       break;
     case IDLE:
       reset();
