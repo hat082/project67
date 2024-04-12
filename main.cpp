@@ -3,6 +3,7 @@
 #include <dirent.h>
 #include <exception>
 #include <iostream>
+#include <iterator>
 #include <locale>
 #include <opencv2/opencv.hpp>
 #include <softPwm.h>
@@ -14,6 +15,8 @@
 #define PWM_PIN 25 // wiringpi pin (not BCM)
 #define RED_LED 23
 #define BLUE_LED 24
+#define TRIG_PIN 19
+#define ECHO_PIN 26
 
 using namespace std;
 using namespace cv;
@@ -373,6 +376,120 @@ Task templateMatching() {
   return task;
 }
 
+float getDistance() {
+  struct timeval start, end;
+  long micros;
+  float distance;
+
+  digitalWrite(TRIG_PIN, HIGH);
+  delayMicroseconds(10); // 发送10微秒的高电平
+  digitalWrite(TRIG_PIN, LOW);
+
+  while (digitalRead(ECHO_PIN) == LOW)
+    ;
+
+  gettimeofday(&start, NULL);
+
+  while (digitalRead(ECHO_PIN) == HIGH)
+    ;
+
+  gettimeofday(&end, NULL);
+
+  micros = (end.tv_sec - start.tv_sec) * 1000000 + end.tv_usec - start.tv_usec;
+  distance = (micros / 2) / 29.1; // 将时间差转换为距离
+
+  return distance;
+}
+
+void count_shape() {
+  auto start = steady_clock::now();
+  int duration_seconds = 100; // Duration in seconds
+
+  int threshold_value = 128;    // Threshold value for binary image
+  double epsilon_factor = 0.03; // Approximation accuracy for contours
+  int min_contour_area = 200;   // Minimum contour area to consider as a shape
+
+  while (duration_cast<seconds>(steady_clock::now() - start).count() <
+         duration_seconds) {
+
+    Mat frame = imgcap(0, 1);
+
+    // Convert the frame to grayscale
+    Mat gray;
+    cvtColor(frame, gray, COLOR_BGR2GRAY);
+
+    // Apply Gaussian blur to reduce noise
+    GaussianBlur(gray, gray, Size(5, 5), 0);
+
+    // Thresholding the grayscale image to obtain binary image
+    Mat binary;
+    threshold(gray, binary, threshold_value, 255, THRESH_BINARY);
+
+    // Find contours in the binary image
+    vector<vector<Point>> contours;
+    vector<Vec4i> hierarchy;
+    findContours(binary, contours, hierarchy, RETR_TREE, CHAIN_APPROX_SIMPLE);
+
+    int t = 0; // Count for triangles
+    int c = 0; // Count for circles
+    int r = 0; // Count for rectangles
+
+    // Iterate through each contour
+    for (size_t i = 0; i < contours.size(); i++) {
+      // Calculate the area of the contour
+      double area = contourArea(contours[i]);
+
+      // If the contour area is above a certain threshold
+      if (area > min_contour_area) {
+        vector<Point> approx;
+        // Obtain a sequence of points of contour
+        approxPolyDP(contours[i], approx,
+                     arcLength(contours[i], true) * epsilon_factor, true);
+
+        // If there are 3 vertices, it's a triangle
+        if (approx.size() == 3) {
+          // Drawing lines around the triangle
+          for (int i = 0; i < 3; i++) {
+            line(frame, approx[i], approx[(i + 1) % 3], Scalar(255, 0, 0), 4);
+          }
+          t++; // Increment triangle count
+        }
+        // If there are 4 vertices, it's a quadrilateral
+        else if (approx.size() == 4) {
+          // Drawing lines around the quadrilateral
+          for (int i = 0; i < 4; i++) {
+            line(frame, approx[i], approx[(i + 1) % 4], Scalar(0, 255, 0), 4);
+          }
+          r++; // Increment rectangle count
+        }
+        // If there are more than 6 vertices, consider it a circle
+        else if (approx.size() > 6) {
+          // Draw a bounding circle around the contour
+          Point2f center;
+          float radius;
+          minEnclosingCircle(approx, center, radius);
+          circle(frame, center, static_cast<int>(radius), Scalar(0, 0, 255), 4);
+          c++; // Increment circle count
+        }
+      }
+    }
+
+    // Show the image in which identified shapes are marked
+    imshow("Tracked", frame);
+
+    // Introduce a delay of 100 milliseconds (0.1 second)
+    // Adjust this value as needed to control the display speed
+    // Larger values will make the display slower
+    if (waitKey(100) == 27) // Press Esc key to exit
+      break;
+    --r;
+    // Display the count of each pattern
+    cout << "Number of triangles: " << t << endl;
+    cout << "Number of rectangles: " << r << endl;
+    cout << "Number of circles: " << c << endl;
+  }
+}
+
 // perform the appropriate task according to input
 void performTask(Task task) {
   switch (task) {
@@ -380,10 +497,10 @@ void performTask(Task task) {
     printf("executing task PLAY_MUSIC");
     system("omxplayer /home/pi/Desktop/p6/3.MP3");
     task = NONE;
-
     break;
   case COUNT_SHAPES1:
-
+    count_shape();
+    task = NONE;
     break;
   case ALARM_FLASH:
     // flash red blue alternatively
@@ -401,24 +518,27 @@ void performTask(Task task) {
   case APPROACH_AND_STOP:
     // use ultrasound sensor to stop at 5cm distance
 
+    serialPuts(robot, "#Baffff 020 020 020 020");
+    while (getDistance() > 5)
+      ;
+
+    // once distance reaches 5cm, stop the car
+    serialPuts(robot, "#ha");
+
+    task = NONE;
     break;
   case KICK_BALL:
     // kick the football to gate
+    // slightly to the side of the track
+    serialPuts(robot, "#Baffff 020 020 040 040");
+    delay(2243);
+    serialPuts(robot, "#ha");
+
+    task = NONE;
     break;
   case TRAFFIC_LIGHT:
     // stop for red light and wait until green light
-    break;
-  case BLUE:
-    // run between split
-    break;
-  case GREEN:
-    // run with higher speed
-    break;
-  case RED:
-    // run with lower speed
-    break;
-  case YELLOW:
-    // run with normal speed
+    // TODO: Not yet implemented
     break;
   }
 }
@@ -479,9 +599,7 @@ int main() {
       // return to the line following state
       if (currentTask == NONE) {
         state = LINE_FOLLOWING;
-        break;
       }
-
       break;
     case IDLE:
       reset();
