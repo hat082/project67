@@ -2,6 +2,7 @@
 #include <chrono>
 #include <dirent.h>
 #include <exception>
+#include <iostream>
 #include <locale>
 #include <opencv2/opencv.hpp>
 #include <softPwm.h>
@@ -23,27 +24,26 @@ Mat g_frame;
 vector<Mat> g_templates;
 
 // TODO: adjust values
-Scalar upper_blue = Scalar(90, 50, 50);
-Scalar lower_blue = Scalar(130, 255, 255);
+Scalar lower_blue = Scalar(71, 0, 0);
+Scalar upper_blue = Scalar(119, 165, 255);
 
-Scalar upper_green = Scalar(40, 50, 50);
-Scalar lower_green = Scalar(80, 255, 255);
+Scalar lower_green = Scalar(40, 50, 50);
+Scalar upper_green = Scalar(80, 255, 255);
 
-Scalar upper_yellow = Scalar(20, 100, 100);
-Scalar lower_yellow = Scalar(40, 255, 255);
+Scalar lower_yellow = Scalar(20, 100, 100);
+Scalar upper_yellow = Scalar(40, 255, 255);
 
-Scalar upper_red = Scalar(0, 100, 100);
-Scalar lower_red = Scalar(10, 255, 255);
+Scalar lower_red = Scalar(0, 100, 100);
+Scalar upper_red = Scalar(10, 255, 255);
 
-Scalar upper_pink = Scalar(130, 50, 50);
-Scalar lower_pink = Scalar(180, 255, 255);
+Scalar lower_pink = Scalar(170, 0, 100);
+Scalar upper_pink = Scalar(179, 255, 235);
 
-Scalar upper_black = Scalar(0, 0, 0);
-Scalar lower_black = Scalar(180, 255, 55);
+Scalar lower_black = Scalar(10, 0, 0);
+Scalar upper_black = Scalar(89, 135, 85);
 
 int robot;
-
-#define BASE_SPEED 20;
+int BASE_SPEED = 20;
 
 enum State { LINE_FOLLOWING, IMG_RECOG, PERFORM_TASK, IDLE };
 enum State state;
@@ -105,7 +105,7 @@ void loadTemplates() {
 
 void moveCamera() {
   if (cameraPos == DOWN)
-    softPwmWrite(PWM_PIN, 25);
+    softPwmWrite(PWM_PIN, 23);
   else if (cameraPos == UP)
     softPwmWrite(PWM_PIN, 15);
   delay(500);
@@ -134,7 +134,6 @@ void setup(void) {
 bool detectContours(const Mat &inputFrame, vector<Point> &largestContour) {
   vector<vector<Point>> contours;
   findContours(inputFrame, contours, RETR_EXTERNAL, CHAIN_APPROX_SIMPLE);
-
   if (contours.empty()) {
     // No contours found, return false
     return false;
@@ -161,7 +160,9 @@ bool detectContours(const Mat &inputFrame, vector<Point> &largestContour) {
 void preprocessFrame(const Mat &inputFrame, Mat &outputFrame) {
   // convert input frame to HSV color space
   Mat frame_hsv;
+  // print input frame channel
   cvtColor(inputFrame, frame_hsv, COLOR_BGR2HSV);
+  // imshow("hsv", frame_hsv);
 
   // Smooth the image to reduce noise
   int blurSize = 17; // Adjust the size of the blur kernel
@@ -171,7 +172,16 @@ void preprocessFrame(const Mat &inputFrame, Mat &outputFrame) {
   Mat mask;
 
   // method 1: HSV inrange filtering
-  inRange(frame_hsv, lower_black, upper_black, mask);
+  inRange(frame_hsv, lower_blue, upper_blue, mask);
+  // if no blue in sight
+  if (countNonZero(mask) < 1500) {
+    // set mask to green
+    inRange(frame_hsv, lower_green, upper_green, mask);
+  }
+  if (countNonZero(mask) < 1500) {
+    // set mask to black
+    inRange(frame_hsv, lower_black, upper_black, mask);
+  }
 
   // Apply morphological operations to remove small noise and fill in gaps in
   // the mask
@@ -180,6 +190,10 @@ void preprocessFrame(const Mat &inputFrame, Mat &outputFrame) {
       getStructuringElement(MORPH_RECT, Size(dilationSize, dilationSize));
   dilate(mask, mask, kernel, Point(-1, -1), 1);
   erode(mask, outputFrame, kernel, Point(-1, -1), 1);
+  // imshow("processed_frame", outputFrame);
+  if (waitKey(1) == 'q') {
+    return;
+  }
 }
 
 // Function to capture an image from the camera, extract the roi, and return it
@@ -211,10 +225,8 @@ void errorCalc() {
 
   Mat resultFrame = frame.clone();
 
-  imshow("pid", resultFrame);
-  if (waitKey(1) == 'q') {
-    return;
-  }
+  cout << "error" << g_error;
+
   // if there were contours found
   if (detectContours(processed_frame, largestContour) == true) {
     // find the center of the largest contour and puttext on the frame
@@ -229,6 +241,11 @@ void errorCalc() {
 
     // draw the distance from the center of the frame to the center of the
     // largest contour
+
+    imshow("pid", resultFrame);
+    if (waitKey(1) == 'q') {
+      return;
+    }
     int distance = (int)center.x - frame.cols / 2;
     g_error = (float)distance;
   } else { // no contours found
@@ -238,11 +255,12 @@ void errorCalc() {
 
 // calculate pid values using g_error and modify offset
 void offsetCalc() {
-  g_kp = 0.3;
-  g_ki = 0.003;
-  g_kd = 3.2;
+  g_kp = 0.2;
+  g_ki = 0;
+  g_kd = 0.8;
 
   g_offset = g_kp * g_error + g_ki * g_error + g_kd * (g_error - g_error_last);
+  g_error_last = g_error;
 }
 
 void sendCmd() {
@@ -251,18 +269,24 @@ void sendCmd() {
   left_speed = BASE_SPEED + g_offset;
   right_speed = BASE_SPEED - g_offset;
 
+  if (g_error == -0.1) {
+    serialPuts(robot, "#Barrrr 020 020 020 020");
+    cout << "back";
+    return;
+  }
   if (left_speed < 0) {
     left_speed *= -1;
-    sprintf(cmd, "#Barrff %03d %03d %03d %03d", left_speed, left_speed,
-            right_speed, right_speed);
+    sprintf(cmd, "#Baffrr %03d %03d %03d %03d", right_speed, right_speed,
+            left_speed, left_speed);
   } else if (right_speed < 0) {
     right_speed *= -1;
-    sprintf(cmd, "#Baffrr %03d %03d %03d %03d", left_speed, left_speed,
-            right_speed, right_speed);
+    sprintf(cmd, "#Barrff %03d %03d %03d %03d", right_speed, right_speed,
+            left_speed, left_speed);
   } else {
-    sprintf(cmd, "#Baffff %03d %03d %03d %03d", left_speed, left_speed,
-            right_speed, right_speed);
+    sprintf(cmd, "#Baffff %03d %03d %03d %03d", right_speed, right_speed,
+            left_speed, left_speed);
   }
+  cout << cmd;
   serialPuts(robot, cmd);
 }
 
@@ -271,6 +295,7 @@ bool existPink() {
   // detect pink color
   Mat frame;
   frame = imgcap(0.5, 0.3);
+  cvtColor(frame, frame, COLOR_BGR2HSV);
   inRange(frame, lower_pink, upper_pink, frame);
 
   imshow("Pink", frame);
@@ -278,15 +303,15 @@ bool existPink() {
     return true;
   }
 
-  if (countNonZero(frame) >= 100) { // TODO: adjust threshold
+  cout << countNonZero(frame);
+  if (countNonZero(frame) >= 10000) {
     return true;
   } else {
-    printf(" pink pixels: %d ", countNonZero(frame));
+    // printf(" pink pixels: %d ", countNonZero(frame));
     return false;
   }
 }
 
-// TODO: finish reset function
 void reset() {
   digitalWrite(PWM_PIN, LOW);
   softPwmCreate(PWM_PIN, 0, 200);
@@ -311,29 +336,33 @@ Task templateMatching() {
   cvtColor(frame, frame, COLOR_BGR2GRAY);
   equalizeHist(frame, frame);
   // loop through all templates and find the best match
-  for (int i = 0; i < g_templates.size(); i++) {
-    printf("Template No.%d: ", i);
-    Mat result;
-    // printf("frame: %d template: %d", frame.size().height,
-    //        g_templates[i].size().height);
-    matchTemplate(frame, g_templates[i], result, TM_CCOEFF_NORMED);
-    double minVal, maxVal;
-    Point minLoc, maxLoc;
+  // for (int i = 0; i < g_templates.size(); i++) {
+  //   printf("Template No.%d: ", i);
+  Mat result;
+  // printf("frame: %d template: %d", frame.size().height,
+  // g_templates[i].size().height);
+  equalizeHist(g_templates[7], g_templates[7]);
+  matchTemplate(frame, g_templates[7], result, TM_CCOEFF_NORMED);
 
-    imshow("result", result);
-    imshow("frame", frame);
-    if (waitKey(1) == 'q') {
-      return PLAY_MUSIC;
-    }
+  normalize(result, result, 0, 1, NORM_MINMAX, -1);
 
-    minMaxLoc(result, &minVal, &maxVal, &minLoc, &maxLoc, Mat());
-    printf("maxVal: %f\n", maxVal);
-    if (maxVal > 0.6 && maxVal > maxVal) {
-      printf("Better match found... \n");
-      maxVal = maxVal;
-      task = (Task)i;
-    }
+  double maxVal;
+
+  imshow("template", g_templates[7]);
+  imshow("frame", frame);
+  if (waitKey(1) == 'q') {
+    return PLAY_MUSIC;
   }
+
+  minMaxLoc(result, nullptr, &maxVal);
+  cout << "maxVal: " << maxVal << endl;
+  if (maxVal > 0.5 && maxVal > maxVal) {
+    // printf("Better match found... \n");
+    maxVal = maxVal;
+    // task = (Task)i;
+  }
+  // }
+  task = PLAY_MUSIC;
   return task;
 }
 
@@ -342,7 +371,9 @@ void performTask(Task task) {
   switch (task) {
   case PLAY_MUSIC:
     printf("executing task PLAY_MUSIC");
-    // system("omxplayer /home/pi/Desktop/p6/3.MP3");
+    system("omxplayer /home/pi/Desktop/p6/3.MP3");
+    task = NONE;
+
     break;
   // case COUNT_SHAPES1:
   // count the number of shapes and display on lcd
@@ -359,8 +390,10 @@ void performTask(Task task) {
     task = NONE;
 
     break;
-    // case APPROACH_AND_STOP:
+  case APPROACH_AND_STOP:
     // use ultrasound sensor to stop at 5cm distance
+    break;
+
     // case KICK_BALL:
     // kick the football to gate
     // case TRAFFIC_LIGHT:
@@ -393,10 +426,11 @@ int main() {
     Task currentTask = NONE;
     switch (state) {
     case LINE_FOLLOWING:
-      if (existPink()) {
-        state = IMG_RECOG;
-        break;
-      }
+      // if (existPink()) {
+      //   serialPuts(robot, "#ha");
+      //   state = IMG_RECOG;
+      //   break;
+      // }
       // calculate g_error from the center of the line
       errorCalc();
       // calculate g_offset of motors using pid
