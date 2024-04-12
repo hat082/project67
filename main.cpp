@@ -175,10 +175,12 @@ void preprocessFrame(const Mat &inputFrame, Mat &outputFrame) {
   inRange(frame_hsv, lower_blue, upper_blue, mask);
   // if no blue in sight
   if (countNonZero(mask) < 1500) {
+    cout << "green";
     // set mask to green
     inRange(frame_hsv, lower_green, upper_green, mask);
   }
   if (countNonZero(mask) < 1500) {
+    cout << "black";
     // set mask to black
     inRange(frame_hsv, lower_black, upper_black, mask);
   }
@@ -269,6 +271,7 @@ void sendCmd() {
   left_speed = BASE_SPEED + g_offset;
   right_speed = BASE_SPEED - g_offset;
 
+  // special case that indicates out of view
   if (g_error == -0.1) {
     serialPuts(robot, "#Barrrr 020 020 020 020");
     cout << "back";
@@ -336,33 +339,37 @@ Task templateMatching() {
   cvtColor(frame, frame, COLOR_BGR2GRAY);
   equalizeHist(frame, frame);
   // loop through all templates and find the best match
-  // for (int i = 0; i < g_templates.size(); i++) {
-  //   printf("Template No.%d: ", i);
-  Mat result;
-  // printf("frame: %d template: %d", frame.size().height,
-  // g_templates[i].size().height);
-  equalizeHist(g_templates[7], g_templates[7]);
-  matchTemplate(frame, g_templates[7], result, TM_CCOEFF_NORMED);
+  for (int i = 0; i < g_templates.size(); i++) {
+    printf("Template No.%d: ", i);
+    Mat result;
 
-  normalize(result, result, 0, 1, NORM_MINMAX, -1);
+    // for debugging
+    // printf("frame: %d template: %d", frame.size().height,
+    // g_templates[i].size().height);
+    equalizeHist(g_templates[7], g_templates[7]);
+    matchTemplate(frame, g_templates[7], result, TM_CCOEFF_NORMED);
 
-  double maxVal;
+    normalize(result, result, 0, 1, NORM_MINMAX, -1);
 
-  imshow("template", g_templates[7]);
-  imshow("frame", frame);
-  if (waitKey(1) == 'q') {
-    return PLAY_MUSIC;
+    double maxVal;
+
+    imshow("template", g_templates[7]);
+    imshow("frame", frame);
+    if (waitKey(1) == 'q') {
+      return PLAY_MUSIC;
+    }
+
+    minMaxLoc(result, nullptr, &maxVal);
+    cout << "maxVal: " << maxVal << endl;
+    if (maxVal > 0.5 && maxVal > maxVal) {
+
+      // printf("Better match found... \n");
+      maxVal = maxVal;
+
+      // task index corresponds to template index
+      task = (Task)i;
+    }
   }
-
-  minMaxLoc(result, nullptr, &maxVal);
-  cout << "maxVal: " << maxVal << endl;
-  if (maxVal > 0.5 && maxVal > maxVal) {
-    // printf("Better match found... \n");
-    maxVal = maxVal;
-    // task = (Task)i;
-  }
-  // }
-  task = PLAY_MUSIC;
   return task;
 }
 
@@ -375,8 +382,9 @@ void performTask(Task task) {
     task = NONE;
 
     break;
-  // case COUNT_SHAPES1:
-  // count the number of shapes and display on lcd
+  case COUNT_SHAPES1:
+
+    break;
   case ALARM_FLASH:
     // flash red blue alternatively
     digitalWrite(RED_LED, HIGH);
@@ -392,20 +400,26 @@ void performTask(Task task) {
     break;
   case APPROACH_AND_STOP:
     // use ultrasound sensor to stop at 5cm distance
-    break;
 
-    // case KICK_BALL:
+    break;
+  case KICK_BALL:
     // kick the football to gate
-    // case TRAFFIC_LIGHT:
+    break;
+  case TRAFFIC_LIGHT:
     // stop for red light and wait until green light
-    // case BLUE:
+    break;
+  case BLUE:
     // run between split
-    // case GREEN:
+    break;
+  case GREEN:
     // run with higher speed
-    // case RED:
+    break;
+  case RED:
     // run with lower speed
-    // case YELLOW:
+    break;
+  case YELLOW:
     // run with normal speed
+    break;
   }
 }
 
@@ -426,11 +440,11 @@ int main() {
     Task currentTask = NONE;
     switch (state) {
     case LINE_FOLLOWING:
-      // if (existPink()) {
-      //   serialPuts(robot, "#ha");
-      //   state = IMG_RECOG;
-      //   break;
-      // }
+      if (existPink()) {
+        serialPuts(robot, "#ha");
+        state = IMG_RECOG;
+        break;
+      }
       // calculate g_error from the center of the line
       errorCalc();
       // calculate g_offset of motors using pid
@@ -465,8 +479,8 @@ int main() {
       // return to the line following state
       if (currentTask == NONE) {
         state = LINE_FOLLOWING;
+        break;
       }
-      break;
 
       break;
     case IDLE:
