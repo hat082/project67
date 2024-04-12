@@ -49,9 +49,10 @@ The program is structured into several sections, each serving a distinct purpose
 - Sets up the robot and enters a loop where it continuously captures images, processes them, and performs tasks based on the detected objects and colors.
 
 ## Usage
-1. **Setup**: Configure the hardware connections and install the necessary software dependencies.
-2. **Compile**: Compile the program using a C++ compiler compatible with the Raspberry Pi.
-3. **Run**: Execute the program on the Raspberry Pi to start the robot's operation.
+```
+g++ -o robot_control main.cpp `pkg-config --cflags --libs opencv4`
+./robot_control
+```
 
 ## License
 This program is distributed under the MIT License, allowing for personal and commercial use, modification, and distribution.
